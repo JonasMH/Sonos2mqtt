@@ -14,6 +14,11 @@ public class SonosSpeaker(SonosZoneMember member, ISonosSpeakerClient client)
     private readonly Channel<Func<CancellationToken, Task>> _commands =
         Channel.CreateUnbounded<Func<CancellationToken, Task>>(new UnboundedChannelOptions { SingleReader = true });
 
+    // Holds at most one pending wake-up, so a burst of events (TRANSITIONING, then PLAYING) costs one extra read
+    // rather than one per event.
+    private readonly Channel<bool> _wake =
+        Channel.CreateBounded<bool>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropWrite, SingleReader = true });
+
     public string Uuid => Member.Uuid;
     public string Name => Member.Name;
 
@@ -37,7 +42,42 @@ public class SonosSpeaker(SonosZoneMember member, ISonosSpeakerClient client)
     /// </summary>
     public string? LastPublishedState { get; set; }
 
+    /// <summary>
+    /// Until when the speaker's event subscriptions are known to be current. While they are, the speaker pushes
+    /// changes and polling only has to be a safety net.
+    /// </summary>
+    public DateTimeOffset SubscribedUntil { get; set; } = DateTimeOffset.MinValue;
+
+    /// <summary>
+    /// Whether an event has arrived since the last new subscription. A speaker sends one straight after
+    /// subscribing, so this is what proves events can actually reach the bridge.
+    /// </summary>
+    public bool EventsArriving { get; set; }
+
+    public bool HasEvents => EventsArriving && SubscribedUntil > DateTimeOffset.UtcNow;
+
     public CancellationTokenSource Lifetime { get; } = new();
+
+    /// <summary>
+    /// Ask for the speaker's state to be read now, because it said something changed.
+    /// </summary>
+    public void Wake() => _wake.Writer.TryWrite(true);
+
+    /// <summary>
+    /// Waits for <paramref name="timeout"/> or until <see cref="Wake"/> is called, whichever comes first.
+    /// </summary>
+    public async Task WaitForWakeAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutSource.CancelAfter(timeout);
+        try
+        {
+            await _wake.Reader.ReadAsync(timeoutSource.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
 
     public ChannelReader<Func<CancellationToken, Task>> Commands => _commands.Reader;
 

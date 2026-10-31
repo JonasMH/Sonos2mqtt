@@ -44,6 +44,23 @@ public class SonosOptions
     public TimeSpan NotificationPollInterval { get; set; } = TimeSpan.FromMilliseconds(250);
 
     /// <summary>
+    /// Where speakers can reach this bridge to push events, e.g. "http://192.168.0.31:31604". Speakers then report
+    /// changes as they happen and polling drops to <see cref="EventPollInterval"/>. Without it, every speaker is
+    /// polled every <see cref="PollInterval"/>.
+    /// </summary>
+    public string? CallbackAddress { get; set; }
+
+    /// <summary>
+    /// How often a speaker with current event subscriptions is still polled, in case an event got lost.
+    /// </summary>
+    public TimeSpan EventPollInterval { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How long event subscriptions are asked for. They are renewed halfway through.
+    /// </summary>
+    public TimeSpan SubscriptionTimeout { get; set; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>
     /// Spotify account region used in the metadata of Spotify URIs. 2311 is Europe, 3079 is North America.
     /// </summary>
     public string SpotifyRegion { get; set; } = "2311";

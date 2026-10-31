@@ -20,6 +20,7 @@ public class SonosHouseholdService(
     SonosSoapClient soap,
     IMqttConnectionService mqtt,
     SonosTopicHelper topics,
+    SonosEventSubscriber events,
     SonosMetrics metrics,
     IOptions<SonosOptions> options,
     ILogger<SonosHouseholdService> logger) : BackgroundService
@@ -87,6 +88,10 @@ public class SonosHouseholdService(
                 var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, speaker.Lifetime.Token).Token;
                 _ = Task.Run(() => PollAsync(speaker, lifetime), CancellationToken.None);
                 _ = Task.Run(() => RunCommandsAsync(speaker, lifetime), CancellationToken.None);
+                if (events.Enabled)
+                {
+                    _ = Task.Run(() => events.RunAsync(speaker, lifetime), CancellationToken.None);
+                }
             }
         }
 
@@ -97,6 +102,7 @@ public class SonosHouseholdService(
             {
                 logger.LogInformation("{name} ({uuid}) left the household", removed.Name, removed.Uuid);
                 removed.Retire();
+                await PublishAvailabilityAsync(removed, false);
             }
         }
 
@@ -151,19 +157,10 @@ public class SonosHouseholdService(
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            TimeSpan wait;
+            SonosStatePayload? state = null;
             try
             {
-                var state = await ReadStateAsync(speaker, cancellationToken);
-
-                if (speaker.Reachable == false)
-                {
-                    logger.LogInformation("{name} ({uuid}) is answering again", speaker.Name, speaker.Uuid);
-                }
-                SetReachable(speaker, true);
-
-                await PublishIfChangedAsync(speaker, state);
-                wait = _options.PollInterval;
+                state = await ReadStateAsync(speaker, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -176,28 +173,58 @@ public class SonosHouseholdService(
                     logger.LogWarning("{name} ({uuid}) at {address} is not answering, retrying every {interval}: {message}",
                         speaker.Name, speaker.Uuid, speaker.Member.BaseAddress, _options.UnreachableRetryInterval, ex.Message);
                 }
-                SetReachable(speaker, false);
-                wait = _options.UnreachableRetryInterval;
             }
 
+            // Publishing is kept apart from reading, so an MQTT hiccup is not mistaken for the speaker going away.
             try
             {
-                await Task.Delay(wait, cancellationToken);
+                if (state != null && speaker.Reachable == false)
+                {
+                    logger.LogInformation("{name} ({uuid}) is answering again", speaker.Name, speaker.Uuid);
+                }
+                await SetReachableAsync(speaker, state != null);
+
+                if (state != null)
+                {
+                    await PublishIfChangedAsync(speaker, state);
+                }
             }
-            catch (OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
-                return;
+                logger.LogWarning("Publishing the state of {name} ({uuid}) failed: {message}", speaker.Name, speaker.Uuid, ex.Message);
             }
+
+            var wait = state == null ? _options.UnreachableRetryInterval
+                : speaker.HasEvents ? _options.EventPollInterval
+                : _options.PollInterval;
+
+            // An event cuts the wait short - including for an unreachable speaker, which only sends one once it is
+            // back.
+            await speaker.WaitForWakeAsync(wait, cancellationToken);
         }
     }
 
-    private void SetReachable(SonosSpeaker speaker, bool reachable)
+    private async Task SetReachableAsync(SonosSpeaker speaker, bool reachable)
     {
         if (speaker.Reachable != reachable)
         {
             speaker.Reachable = reachable;
             UpdateSpeakerCounts();
+            await PublishAvailabilityAsync(speaker, reachable);
         }
+    }
+
+    /// <summary>
+    /// Retained "online" or "offline" on {NodeId}/{uuid}/availability. The state topic keeps the last state a
+    /// speaker reported, so this is what tells a subscriber the speaker stopped answering.
+    /// </summary>
+    private Task PublishAvailabilityAsync(SonosSpeaker speaker, bool online)
+    {
+        return mqtt.PublishAsync(new MqttApplicationMessageBuilder()
+            .WithTopic(topics.GetAvailabilityTopic(speaker.Uuid))
+            .WithPayload(online ? "online" : "offline")
+            .WithRetainFlag()
+            .Build());
     }
 
     private void UpdateSpeakerCounts()

@@ -11,6 +11,7 @@ public class SonosTopicHelper(IMqttConnectionService mqttConnection)
     private readonly IMqttConnectionService _mqttConnection = mqttConnection;
 
     public string GetStateTopic(string uuid) => $"{_mqttConnection.MqttOptions.NodeId}/{uuid}";
+    public string GetAvailabilityTopic(string uuid) => $"{_mqttConnection.MqttOptions.NodeId}/{uuid}/availability";
     public string GetErrorTopic(string uuid) => $"{_mqttConnection.MqttOptions.NodeId}/{uuid}/error";
     public string GetReplyTopic(string uuid, string replyTopic) => $"{_mqttConnection.MqttOptions.NodeId}/{uuid}/{replyTopic}";
     public string GetControlTopicFilter() => $"{_mqttConnection.MqttOptions.NodeId}/+/control";

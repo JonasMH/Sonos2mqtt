@@ -43,6 +43,7 @@ services.AddSingleton<SonosSoapClient>();
 services.AddSingleton<SonosTopicHelper>();
 services.AddSingleton<SonosSpeakerRegistry>();
 services.AddSingleton<SonosNotificationPlayer>();
+services.AddSingleton<SonosEventSubscriber>();
 services.AddSingleton<SonosCommandExecutor>();
 services.AddHostedService<SonosHouseholdService>();
 services.AddHostedService<SonosCommandHandler>();
@@ -51,6 +52,7 @@ var app = builder.Build();
 
 app.MapHealthChecks("/health");
 app.MapPrometheusScrapingEndpoint("/metrics");
+app.MapMethods(SonosEventSubscriber.CallbackPath, ["NOTIFY"], app.Services.GetRequiredService<SonosEventSubscriber>().HandleNotifyAsync);
 
 app.Run();
 

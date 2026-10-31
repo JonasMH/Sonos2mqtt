@@ -12,11 +12,29 @@ docker pull ghcr.io/jonasmh/sonos2mqtt:latest
 
 ### Survives speakers that come and go
 
-The household topology is read from any speaker that answers and refreshed every 30 seconds. A speaker that is listed but does not answer (unplugged, off the network) is logged once and retried every 15 seconds, without holding up the others. sonos2mqtt crashed on startup in that situation.
+The household topology is read from any speaker that answers and refreshed every 30 seconds. A speaker that is listed but does not answer (unplugged, off the network) is logged once, marked `offline`, and retried every 15 seconds, without holding up the others. sonos2mqtt crashed on startup in that situation.
 
-### No inbound connections
+### Events, with polling as the fallback
 
-State is polled rather than subscribed to with UPnP events, so the speakers never have to reach the bridge. No `hostPort`, host networking or callback address is needed, and the pod can run on any node. Each speaker is asked for its state once a second, and only changes are published.
+With `Sonos:CallbackAddress` set, the bridge subscribes to each speaker's UPnP events (AVTransport and RenderingControl). An event makes the bridge read that speaker's state straight away, so changes show up within a round trip. While events arrive, each speaker is still polled every 30 seconds in case one got lost.
+
+Events count as working only once one has actually arrived. If a speaker refuses the subscription, or accepts it but its events never reach the bridge, it is logged and that speaker is polled every second instead. Without a callback address, every speaker is polled every second. Either way only changes are published.
+
+In Kubernetes, expose the bridge with a `hostPort` and build the callback address from the node's IP, so the pod can run on any node:
+
+```yaml
+env:
+  - name: HOST_IP
+    valueFrom:
+      fieldRef:
+        fieldPath: status.hostIP
+  - name: Sonos__CallbackAddress
+    value: http://$(HOST_IP):31604
+ports:
+  - name: http
+    containerPort: 8080
+    hostPort: 31604
+```
 
 ### Publish speaker state to MQTT
 
@@ -44,6 +62,8 @@ State is polled rather than subscribed to with UPnP events, so the speakers neve
 ```
 
 `transportState` is one of `PLAYING`, `PAUSED_PLAYBACK`, `STOPPED` or `TRANSITIONING`.
+
+`sonos/<uuid>/availability`, retained, is `online` while the speaker answers and `offline` once it stops or leaves the household. The state topic keeps the last state the speaker reported, so check this before trusting it.
 
 `sonos/connected` is `2` while the bridge is connected to MQTT.
 
@@ -116,7 +136,10 @@ Settings come from `appsettings.json` or environment variables (`Sonos__SeedHost
 | Setting | Default | |
 | --- | --- | --- |
 | `Sonos:SeedHosts` | required | Speakers to ask for the topology, as `host` or `host:port`. One reachable speaker is enough |
-| `Sonos:PollInterval` | `00:00:01` | How often each speaker is polled |
+| `Sonos:CallbackAddress` | none | Where speakers can reach the bridge for events, e.g. `http://192.168.0.31:31604`. Leave out to poll only |
+| `Sonos:PollInterval` | `00:00:01` | How often each speaker is polled without events |
+| `Sonos:EventPollInterval` | `00:00:30` | How often each speaker is polled while events arrive |
+| `Sonos:SubscriptionTimeout` | `00:30:00` | Event subscription length; renewed halfway |
 | `Sonos:UnreachableRetryInterval` | `00:00:15` | How often a speaker that does not answer is tried again |
 | `Sonos:TopologyInterval` | `00:00:30` | How often the topology is refreshed |
 | `Sonos:RequestTimeout` | `00:00:05` | Timeout per request to a speaker |
@@ -126,11 +149,10 @@ Settings come from `appsettings.json` or environment variables (`Sonos__SeedHost
 | `MqttConnection:UseTls` | `true` | Client certificates are read from `/data/mosquitto-client-certs/` |
 | `MqttConnection:NodeId` | `sonos` | Topic prefix |
 
-Health is served on `:8080/health` and Prometheus metrics on `:8080/metrics`.
+Health is served on `:8080/health`, Prometheus metrics on `:8080/metrics`, and speaker events are received on `:8080/events/<uuid>`.
 
 ## Differences from sonos2mqtt
 
-- State is polled, not evented, so changes take up to a second to show.
 - Back-to-back notifications each restore the speaker before the next one plays. sonos2mqtt played queued notifications in a row and restored once.
 - Not implemented: `speak`, `speaktwo`, `notifytwo`, `setnightmode`, `setledstate`, `setbuttonlockstate`, the `sonos/set/...` and `sonos/cmd/...` topics, the `distinct` per-field topics, and Home Assistant discovery.
 - Metadata guessing covers Spotify and Sonos playlists. Other services' URIs are passed through as they are.
@@ -143,4 +165,4 @@ cd src/Sonos2Mqtt && dotnet run   # appsettings.Development.json: MQTT on localh
 make build-image
 ```
 
-Releases are built by pushing a tag: `git tag v1.0.0 && git push origin v1.0.0` runs the tests and pushes `ghcr.io/jonasmh/sonos2mqtt:v1.0.0` and `:latest`.
+Releases are built by pushing a tag: `git tag v1.0.0 && git push origin v1.0.0` runs the tests, pushes `ghcr.io/jonasmh/sonos2mqtt:v1.0.0` and `:latest`, and creates a GitHub release with generated notes.

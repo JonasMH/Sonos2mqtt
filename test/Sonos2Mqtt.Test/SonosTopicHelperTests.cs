@@ -39,6 +39,7 @@ public class SonosTopicHelperTests
     public void TopicsMatchSonos2Mqtt()
     {
         Assert.Equal("sonos/RINCON_38420B960A1201400", _sut.GetStateTopic("RINCON_38420B960A1201400"));
+        Assert.Equal("sonos/RINCON_38420B960A1201400/availability", _sut.GetAvailabilityTopic("RINCON_38420B960A1201400"));
         Assert.Equal("sonos/+/control", _sut.GetControlTopicFilter());
     }
 
