@@ -1,0 +1,48 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  IMAGE: ghcr.io/jonasmh/sonos2mqtt
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v5
+      - name: Setup .NET Core
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.100"
+      - name: Run tests
+        run: dotnet test --blame-hang-timeout 2m Sonos2Mqtt.sln
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [test]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v5
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build image
+        run: >-
+          docker build --pull -f ./src/Sonos2Mqtt/Dockerfile
+          --label org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          --label org.opencontainers.image.version=${{ github.ref_name }}
+          -t $IMAGE:${{ github.ref_name }} -t $IMAGE:latest .
+      - name: Push image
+        run: |-
+          docker push $IMAGE:${{ github.ref_name }};
+          docker push $IMAGE:latest;
